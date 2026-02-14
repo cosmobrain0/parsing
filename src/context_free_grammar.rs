@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
+use std::fmt::Debug;
 use std::hash::Hash;
 
-pub trait ItemTrait: Hash + Clone + PartialEq + Eq {}
+pub trait ItemTrait: Debug + Hash + Clone + PartialEq + Eq {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Item<N: ItemTrait, T: ItemTrait> {
@@ -22,26 +23,20 @@ enum Terminal<T: ItemTrait> {
 pub struct Production<N: ItemTrait, T: ItemTrait>(pub N, pub Vec<Item<N, T>>);
 
 pub struct Grammar<N: ItemTrait, T: ItemTrait> {
-    nullable: HashMap<N, bool>, // because we know that all terminals are non-nullable anyway,
-    // except epsilon
-    first: HashMap<N, HashSet<Terminal<T>>>,
-    follows: HashMap<N, HashSet<Terminal<T>>>,
-    productions: HashSet<Production<N, T>>,
     start_symbol: N,
+    parsing_table: HashMap<(N, Terminal<T>), Vec<Item<N, T>>>,
 }
 impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
-    pub fn new(productions: HashSet<Production<N, T>>, start_symbol: N) -> Self {
-        let nullables = Self::compute_nullables(&productions);
-        let first = Self::compute_firsts(&productions, &nullables);
-        let follows = Self::compute_follows(start_symbol.clone(), &productions, &first);
+    pub fn new(productions: HashSet<Production<N, T>>, start_symbol: N) -> Option<Self> {
+        let Some(parsing_table) = Self::compute_parsing_table(&productions, start_symbol.clone())
+        else {
+            return None;
+        };
 
-        Self {
-            nullable: nullables,
-            first,
-            follows,
-            productions,
+        Some(Self {
+            parsing_table,
             start_symbol,
-        }
+        })
     }
 
     fn compute_nullables(productions: &HashSet<Production<N, T>>) -> HashMap<N, bool> {
@@ -125,6 +120,56 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
             }
         }
         result
+    }
+
+    fn compute_parsing_table(
+        productions: &HashSet<Production<N, T>>,
+        start_symbol: N,
+    ) -> Option<HashMap<(N, Terminal<T>), Vec<Item<N, T>>>> {
+        let mut result = HashMap::new();
+
+        let nullables = Self::compute_nullables(productions);
+        let firsts = Self::compute_firsts(productions, &nullables);
+        let follows = Self::compute_follows(start_symbol.clone(), productions, &firsts);
+
+        for Production(source, results) in productions {
+            let production_firsts: HashSet<Terminal<T>> =
+                Self::compute_sequence_firsts(results.as_slice(), &firsts);
+            for first in &production_firsts {
+                if first.clone() != Terminal::Epsilon {
+                    result
+                        .entry((source.clone(), first.clone()))
+                        .or_insert_with(Vec::new);
+                    result
+                        .get_mut(&(source.clone(), first.clone()))
+                        .unwrap()
+                        .push(results.clone());
+                } else if production_firsts.contains(&Terminal::Epsilon) {
+                    for b in follows.get(source).cloned().unwrap_or_default() {
+                        result
+                            .entry((source.clone(), b.clone()))
+                            .or_insert_with(Vec::new);
+                        result
+                            .get_mut(&(source.clone(), b.clone()))
+                            .unwrap()
+                            .push(results.clone());
+                    }
+                }
+            }
+        }
+
+        let mut final_result = HashMap::new();
+        dbg!(&result);
+        for (key, mut value) in result.into_iter() {
+            if value.len() > 1 {
+                return None;
+            }
+            if let Some(value) = value.pop() {
+                final_result.insert(key, value);
+            }
+        }
+
+        Some(final_result)
     }
 
     fn compute_follows(
@@ -218,6 +263,41 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
             }
         })
     }
+
+    fn compute_sequence_firsts(
+        sequence: &[Item<N, T>],
+        first: &HashMap<N, HashSet<Terminal<T>>>,
+    ) -> HashSet<Terminal<T>> {
+        let mut results = HashSet::new();
+        for item in sequence {
+            match item {
+                Item::NonTerminal(n) => {
+                    let new_firsts = if let Some(new_firsts) = first.get(n) {
+                        new_firsts.clone()
+                    } else {
+                        Self::compute_sequence_firsts(sequence, first)
+                    };
+                    let nullable = new_firsts.contains(&Terminal::Epsilon);
+                    results.extend(new_firsts.into_iter());
+                    if !nullable {
+                        return results;
+                    }
+                }
+                Item::Terminal(c) => {
+                    results.insert(Terminal::Terminal(c.clone()));
+                    return results;
+                }
+                Item::Epsilon => {
+                    results.insert(Terminal::Epsilon);
+                }
+                Item::EndOfInput => {
+                    results.insert(Terminal::EndOfInput);
+                    return results;
+                }
+            }
+        }
+        results // NOTE: is this an error case?
+    }
 }
 
 #[macro_export]
@@ -296,10 +376,80 @@ mod tests {
                 production!(Factor => term!(Identifier)),
             ]),
             NonTerminal::Start,
-        );
+        )
+        .unwrap();
         dbg!("Created grammar!");
 
         assert_eq!(
+            grammar.parsing_table,
+            HashMap::from_iter([
+                (
+                    (Start, Terminal::Terminal(Identifier)),
+                    vec![Item::NonTerminal(Expr), Item::EndOfInput]
+                ),
+                (
+                    (Start, Terminal::Terminal(OpenParen)),
+                    vec![Item::NonTerminal(Expr), Item::EndOfInput]
+                ),
+                (
+                    (Expr, Terminal::Terminal(Identifier)),
+                    vec![Item::NonTerminal(Term), Item::NonTerminal(ExprPrime)],
+                ),
+                (
+                    (Expr, Terminal::Terminal(OpenParen)),
+                    vec![Item::NonTerminal(Term), Item::NonTerminal(ExprPrime)],
+                ),
+                (
+                    (ExprPrime, Terminal::Terminal(Plus)),
+                    vec![
+                        Item::Terminal(Plus),
+                        Item::NonTerminal(Term),
+                        Item::NonTerminal(ExprPrime)
+                    ],
+                ),
+                (
+                    (ExprPrime, Terminal::Terminal(CloseParen)),
+                    vec![Item::Epsilon]
+                ),
+                ((ExprPrime, Terminal::EndOfInput), vec![Item::Epsilon]),
+                (
+                    (TermPrime, Terminal::Terminal(CloseParen)),
+                    vec![Item::Epsilon]
+                ),
+                ((TermPrime, Terminal::Terminal(Plus)), vec![Item::Epsilon]),
+                ((TermPrime, Terminal::EndOfInput), vec![Item::Epsilon]),
+                (
+                    (Term, Terminal::Terminal(Identifier)),
+                    vec![Item::NonTerminal(Factor), Item::NonTerminal(TermPrime)]
+                ),
+                (
+                    (Term, Terminal::Terminal(OpenParen)),
+                    vec![Item::NonTerminal(Factor), Item::NonTerminal(TermPrime)]
+                ),
+                (
+                    (TermPrime, Terminal::Terminal(Star)),
+                    vec![
+                        Item::Terminal(Star),
+                        Item::NonTerminal(Factor),
+                        Item::NonTerminal(TermPrime)
+                    ]
+                ),
+                (
+                    (Factor, Terminal::Terminal(Identifier)),
+                    vec![Item::Terminal(Identifier),]
+                ),
+                (
+                    (Factor, Terminal::Terminal(OpenParen)),
+                    vec![
+                        Item::Terminal(OpenParen),
+                        Item::NonTerminal(Expr),
+                        Item::Terminal(CloseParen)
+                    ]
+                ),
+            ]),
+        )
+
+        /*assert_eq!(
             grammar.nullable,
             HashMap::from_iter([
                 (ExprPrime, true),
@@ -309,9 +459,9 @@ mod tests {
                 (Factor, false),
                 (Start, false)
             ])
-        );
+        );*/
 
-        assert_eq!(
+        /*assert_eq!(
             grammar.first,
             HashMap::from_iter([
                 (
@@ -351,9 +501,9 @@ mod tests {
                     ])
                 ),
             ])
-        );
+        );*/
 
-        assert_eq!(
+        /*assert_eq!(
             grammar.follows,
             HashMap::from_iter([
                 (Start, HashSet::from_iter([Terminal::EndOfInput])),
@@ -391,6 +541,6 @@ mod tests {
                     ])
                 ),
             ])
-        )
+        )*/
     }
 }
