@@ -11,6 +11,15 @@ pub enum Item<N: ItemTrait, T: ItemTrait> {
     Epsilon,
     EndOfInput,
 }
+impl<N: ItemTrait, T: ItemTrait> From<Terminal<T>> for Item<N, T> {
+    fn from(value: Terminal<T>) -> Self {
+        match value {
+            Terminal::Terminal(c) => Item::Terminal(c),
+            Terminal::Epsilon => Item::Epsilon,
+            Terminal::EndOfInput => Item::EndOfInput,
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Terminal<T: ItemTrait> {
@@ -28,15 +37,55 @@ pub struct Grammar<N: ItemTrait, T: ItemTrait> {
 }
 impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
     pub fn new(productions: HashSet<Production<N, T>>, start_symbol: N) -> Option<Self> {
-        let Some(parsing_table) = Self::compute_parsing_table(&productions, start_symbol.clone())
-        else {
-            return None;
-        };
+        let parsing_table = Self::compute_parsing_table(&productions, start_symbol.clone())?;
 
         Some(Self {
             parsing_table,
             start_symbol,
         })
+    }
+
+    pub fn is_valid(&self, input: &[T]) -> bool {
+        let mut input = input
+            .iter()
+            .cloned()
+            .map(Terminal::Terminal)
+            .chain([Terminal::EndOfInput])
+            .rev()
+            .collect::<Vec<_>>();
+        let mut stack = vec![Item::NonTerminal(self.start_symbol.clone())];
+
+        let Some(mut a) = input.pop() else {
+            return false;
+        };
+        while stack[stack.len() - 1] != Item::EndOfInput {
+            if stack[stack.len() - 1] == a.clone().into() {
+                dbg!("Matching something!");
+                stack.pop();
+                a = match input.pop() {
+                    Some(x) => x,
+                    None => return false,
+                };
+            } else if let Item::NonTerminal(n) = stack[stack.len() - 1].clone()
+                && let Some(rhs) = self.parsing_table.get(&(n, a.clone()))
+            {
+                dbg!("reducing something!");
+                dbg!(&stack);
+                dbg!(&a);
+                dbg!(&rhs);
+                stack.pop();
+                stack.extend(
+                    rhs.iter()
+                        .cloned()
+                        .rev()
+                        .filter(|x| x.clone() != Item::Epsilon),
+                );
+            } else {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn compute_nullables(productions: &HashSet<Production<N, T>>) -> HashMap<N, bool> {
@@ -159,7 +208,6 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
         }
 
         let mut final_result = HashMap::new();
-        dbg!(&result);
         for (key, mut value) in result.into_iter() {
             if value.len() > 1 {
                 return None;
@@ -362,7 +410,6 @@ mod tests {
         use NonTerminal::*;
         use TokenType::*;
 
-        dbg!("Starting!");
         let grammar = Grammar::new(
             HashSet::from_iter([
                 production!(Start => nterm!(Expr), Item::EndOfInput),
@@ -447,7 +494,14 @@ mod tests {
                     ]
                 ),
             ]),
-        )
+        );
+
+        assert!(grammar.is_valid(&[
+            TokenType::Identifier,
+            TokenType::Plus,
+            TokenType::Identifier,
+        ]));
+        assert!(!grammar.is_valid(&[TokenType::Identifier, TokenType::Identifier,]));
 
         /*assert_eq!(
             grammar.nullable,
