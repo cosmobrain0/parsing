@@ -25,6 +25,7 @@ pub struct Grammar<N: ItemTrait, T: ItemTrait> {
     nullable: HashMap<N, bool>, // because we know that all terminals are non-nullable anyway,
     // except epsilon
     first: HashMap<N, HashSet<Terminal<T>>>,
+    follows: HashMap<N, HashSet<Terminal<T>>>,
     productions: HashSet<Production<N, T>>,
     start_symbol: N,
 }
@@ -32,10 +33,12 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
     pub fn new(productions: HashSet<Production<N, T>>, start_symbol: N) -> Self {
         let nullables = Self::compute_nullables(&productions);
         let first = Self::compute_firsts(&productions, &nullables);
+        let follows = Self::compute_follows(start_symbol.clone(), &productions, &first);
 
         Self {
             nullable: nullables,
             first,
+            follows,
             productions,
             start_symbol,
         }
@@ -63,7 +66,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
             .filter(|prod| &prod.0 == nonterminal)
             .map(|Production(_, result)| result)
         {
-            if Self::is_sequence_nullable(productions, already_computed, result) {
+            if Self::is_sequence_nullable(productions, already_computed, result.as_slice()) {
                 return true;
             }
         }
@@ -79,7 +82,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
         while changed {
             changed = false;
             for production in productions {
-                if Self::is_sequence_nullable(productions, nullables, &production.1) {
+                if Self::is_sequence_nullable(productions, nullables, production.1.as_slice()) {
                     changed = changed
                         || if result.contains_key(&production.0) {
                             result
@@ -123,10 +126,84 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
         }
         result
     }
+
+    fn compute_follows(
+        start_symbol: N,
+        productions: &HashSet<Production<N, T>>,
+        firsts: &HashMap<N, HashSet<Terminal<T>>>,
+    ) -> HashMap<N, HashSet<Terminal<T>>> {
+        let mut result = HashMap::new();
+        result.insert(start_symbol, HashSet::from_iter([Terminal::EndOfInput]));
+
+        let mut changed = true;
+        while changed {
+            changed = false;
+
+            for production in productions {
+                for (i, item) in production.1.iter().enumerate() {
+                    if let Item::NonTerminal(n) = item {
+                        // if A = aB is a production, then FOLLOW(B) += FOLLOW(A)
+                        if i == production.1.len() - 1
+                            || match &production.1[i + 1] {
+                                Item::NonTerminal(n) => firsts
+                                    .get(n)
+                                    .map(|firsts| firsts.contains(&Terminal::Epsilon))
+                                    .unwrap_or(false),
+                                Item::Terminal(_) => false,
+                                Item::Epsilon => true,
+                                Item::EndOfInput => false,
+                            }
+                        {
+                            let follow_a = result.get(&production.0).cloned().unwrap_or_default();
+                            if !result.contains_key(n) {
+                                result.insert(n.clone(), HashSet::new());
+                            }
+                            if follow_a.iter().any(|x| !result.get(n).unwrap().contains(x)) {
+                                changed = true;
+                                result.get_mut(n).unwrap().extend(follow_a.into_iter());
+                            }
+                        }
+                        if i != production.1.len() - 1 {
+                            if !result.contains_key(n) {
+                                result.insert(n.clone(), HashSet::new());
+                            }
+                            let firsts_following = match &production.1[i + 1] {
+                                Item::NonTerminal(n) => firsts
+                                    .get(n)
+                                    .map(|x| {
+                                        x.iter()
+                                            .filter(|x| (*x).clone() != Terminal::<T>::Epsilon)
+                                            .cloned()
+                                            .collect::<Vec<_>>()
+                                    })
+                                    .unwrap_or_default(),
+                                Item::Terminal(c) => vec![Terminal::Terminal(c.clone())],
+                                Item::Epsilon => vec![],
+                                Item::EndOfInput => vec![Terminal::EndOfInput],
+                            };
+                            if firsts_following
+                                .iter()
+                                .any(|x| !result.get(n).unwrap().contains(x))
+                            {
+                                changed = true;
+                                result
+                                    .get_mut(n)
+                                    .unwrap()
+                                    .extend(firsts_following.into_iter());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
     fn is_sequence_nullable(
         productions: &HashSet<Production<N, T>>,
         nullables: &HashMap<N, bool>,
-        result: &Vec<Item<N, T>>,
+        result: &[Item<N, T>],
     ) -> bool {
         result.iter().all(|item| match item {
             Item::EndOfInput => false,
@@ -271,6 +348,46 @@ mod tests {
                     HashSet::from_iter([
                         Terminal::Terminal(OpenParen),
                         Terminal::Terminal(Identifier),
+                    ])
+                ),
+            ])
+        );
+
+        assert_eq!(
+            grammar.follows,
+            HashMap::from_iter([
+                (Start, HashSet::from_iter([Terminal::EndOfInput])),
+                (
+                    Expr,
+                    HashSet::from_iter([Terminal::Terminal(CloseParen), Terminal::EndOfInput])
+                ),
+                (
+                    ExprPrime,
+                    HashSet::from_iter([Terminal::Terminal(CloseParen), Terminal::EndOfInput])
+                ),
+                (
+                    Term,
+                    HashSet::from_iter([
+                        Terminal::Terminal(Plus),
+                        Terminal::Terminal(CloseParen),
+                        Terminal::EndOfInput
+                    ])
+                ),
+                (
+                    TermPrime,
+                    HashSet::from_iter([
+                        Terminal::Terminal(Plus),
+                        Terminal::Terminal(CloseParen),
+                        Terminal::EndOfInput
+                    ])
+                ),
+                (
+                    Factor,
+                    HashSet::from_iter([
+                        Terminal::Terminal(Plus),
+                        Terminal::Terminal(Star),
+                        Terminal::Terminal(CloseParen),
+                        Terminal::EndOfInput
                     ])
                 ),
             ])
