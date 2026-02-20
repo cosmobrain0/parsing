@@ -2,6 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::hash::Hash;
 
+pub mod slr;
+
 pub trait ItemTrait: Debug + Hash + Clone + PartialEq + Eq {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -14,7 +16,7 @@ pub enum Item<N: ItemTrait, T: ItemTrait> {
 impl<N: ItemTrait, T: ItemTrait> From<Terminal<T>> for Item<N, T> {
     fn from(value: Terminal<T>) -> Self {
         match value {
-            Terminal::Terminal(c) => Item::Terminal(c),
+            Terminal::T(c) => Item::Terminal(c),
             Terminal::Epsilon => Item::Epsilon,
             Terminal::EndOfInput => Item::EndOfInput,
         }
@@ -23,7 +25,7 @@ impl<N: ItemTrait, T: ItemTrait> From<Terminal<T>> for Item<N, T> {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Terminal<T: ItemTrait> {
-    Terminal(T),
+    T(T),
     Epsilon,
     EndOfInput,
 }
@@ -49,7 +51,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
         let mut input = input
             .iter()
             .cloned()
-            .map(Terminal::Terminal)
+            .map(Terminal::T)
             .chain([Terminal::EndOfInput])
             .rev()
             .collect::<Vec<_>>();
@@ -146,7 +148,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
                     // NOTE: there's got to be a simple way of doing this without cloning
                     let mut firsts = match item {
                         Item::NonTerminal(n) => result.get(n).cloned().unwrap_or_default(),
-                        Item::Terminal(x) => HashSet::from_iter([Terminal::Terminal(x.clone())]),
+                        Item::Terminal(x) => HashSet::from_iter([Terminal::T(x.clone())]),
                         Item::Epsilon => HashSet::from_iter([Terminal::Epsilon]),
                         Item::EndOfInput => HashSet::from_iter([Terminal::EndOfInput]),
                     };
@@ -270,7 +272,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
                                             .collect::<Vec<_>>()
                                     })
                                     .unwrap_or_default(),
-                                Item::Terminal(c) => vec![Terminal::Terminal(c.clone())],
+                                Item::Terminal(c) => vec![Terminal::T(c.clone())],
                                 Item::Epsilon => vec![],
                                 Item::EndOfInput => vec![Terminal::EndOfInput],
                             };
@@ -332,7 +334,7 @@ impl<N: ItemTrait, T: ItemTrait> Grammar<N, T> {
                     }
                 }
                 Item::Terminal(c) => {
-                    results.insert(Terminal::Terminal(c.clone()));
+                    results.insert(Terminal::T(c.clone()));
                     return results;
                 }
                 Item::Epsilon => {
@@ -431,50 +433,44 @@ mod tests {
             grammar.parsing_table,
             HashMap::from_iter([
                 (
-                    (Start, Terminal::Terminal(Identifier)),
+                    (Start, Terminal::T(Identifier)),
                     vec![Item::NonTerminal(Expr), Item::EndOfInput]
                 ),
                 (
-                    (Start, Terminal::Terminal(OpenParen)),
+                    (Start, Terminal::T(OpenParen)),
                     vec![Item::NonTerminal(Expr), Item::EndOfInput]
                 ),
                 (
-                    (Expr, Terminal::Terminal(Identifier)),
+                    (Expr, Terminal::T(Identifier)),
                     vec![Item::NonTerminal(Term), Item::NonTerminal(ExprPrime)],
                 ),
                 (
-                    (Expr, Terminal::Terminal(OpenParen)),
+                    (Expr, Terminal::T(OpenParen)),
                     vec![Item::NonTerminal(Term), Item::NonTerminal(ExprPrime)],
                 ),
                 (
-                    (ExprPrime, Terminal::Terminal(Plus)),
+                    (ExprPrime, Terminal::T(Plus)),
                     vec![
                         Item::Terminal(Plus),
                         Item::NonTerminal(Term),
                         Item::NonTerminal(ExprPrime)
                     ],
                 ),
-                (
-                    (ExprPrime, Terminal::Terminal(CloseParen)),
-                    vec![Item::Epsilon]
-                ),
+                ((ExprPrime, Terminal::T(CloseParen)), vec![Item::Epsilon]),
                 ((ExprPrime, Terminal::EndOfInput), vec![Item::Epsilon]),
-                (
-                    (TermPrime, Terminal::Terminal(CloseParen)),
-                    vec![Item::Epsilon]
-                ),
-                ((TermPrime, Terminal::Terminal(Plus)), vec![Item::Epsilon]),
+                ((TermPrime, Terminal::T(CloseParen)), vec![Item::Epsilon]),
+                ((TermPrime, Terminal::T(Plus)), vec![Item::Epsilon]),
                 ((TermPrime, Terminal::EndOfInput), vec![Item::Epsilon]),
                 (
-                    (Term, Terminal::Terminal(Identifier)),
+                    (Term, Terminal::T(Identifier)),
                     vec![Item::NonTerminal(Factor), Item::NonTerminal(TermPrime)]
                 ),
                 (
-                    (Term, Terminal::Terminal(OpenParen)),
+                    (Term, Terminal::T(OpenParen)),
                     vec![Item::NonTerminal(Factor), Item::NonTerminal(TermPrime)]
                 ),
                 (
-                    (TermPrime, Terminal::Terminal(Star)),
+                    (TermPrime, Terminal::T(Star)),
                     vec![
                         Item::Terminal(Star),
                         Item::NonTerminal(Factor),
@@ -482,11 +478,11 @@ mod tests {
                     ]
                 ),
                 (
-                    (Factor, Terminal::Terminal(Identifier)),
+                    (Factor, Terminal::T(Identifier)),
                     vec![Item::Terminal(Identifier),]
                 ),
                 (
-                    (Factor, Terminal::Terminal(OpenParen)),
+                    (Factor, Terminal::T(OpenParen)),
                     vec![
                         Item::Terminal(OpenParen),
                         Item::NonTerminal(Expr),
